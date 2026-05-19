@@ -1,0 +1,902 @@
+<!--
+  Nazwa: dashboard_temperatury_tygodniowy_overlay.html
+  Cel: jednoplikowy dashboard HTML do analizy temperatury z sensora ThingSpeak oraz temperatury zewnętrznej dla Lublina.
+  Użycie: plik należy zapisać jako index.html albo inna_nazwa.html i otworzyć w przeglądarce; może działać lokalnie oraz na GitHub Pages.
+  Uruchomienie: ustawić CHANNEL_ID, SENSOR_FIELD oraz ewentualnie READ_API_KEY w sekcji KONFIGURACJA, następnie otworzyć plik w przeglądarce.
+  Wymagania: dostęp do internetu, przeglądarka z obsługą JavaScript, publiczny kanał ThingSpeak albo poprawny Read API Key, zewnętrzna biblioteka Plotly ładowana z CDN.
+  Wynik: strona automatycznie pobiera dane, przelicza agregaty godzinowe/dzienne/tygodniowe i rysuje wykresy porównawcze.
+  Zatrzymanie: zamknąć kartę przeglądarki; strona nie wykonuje działań w tle po zamknięciu.
+  Uwagi: jeżeli kanał ThingSpeak jest prywatny, wpisanie READ_API_KEY w kodzie strony opublikowanej na GitHub Pages ujawnia ten klucz każdej osobie, która otworzy stronę lub źródło strony. Dla danych wrażliwych właściwszy jest mały backend/proxy.
+  Data: 2026-05-19
+  Status: prototyp
+  Założenia i sposób rozumienia działania:
+  - temperatura sensora jest w polu field1 kanału ThingSpeak 3317976;
+  - do długiego zakresu pobierane są dane godzinowe z ThingSpeak przez parametr average=60, z maksymalną liczbą wyników wynikającą z API;
+  - do bieżącego dnia pobierane są dane surowe od północy czasu Europe/Warsaw, ponieważ liczba próbek z jednego dnia zwykle mieści się w limicie;
+  - temperatura dla Lublina pochodzi z Open-Meteo i jest dopasowywana do danych sensora po godzinie lokalnej;
+  - wykresy tygodniowe porównują kolejne tygodnie w układzie poniedziałek 00:00 do niedziela 23:00;
+  - średnie, minima i maksima liczone są wyłącznie z poprawnych wartości liczbowych;
+  - jeżeli brakuje danych pogodowych lub sensora, wykres nadal się rysuje, ale odpowiednie serie mogą mieć przerwy.
+-->
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard temperatury — sensor i Lublin</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #172033;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --line: rgba(255,255,255,0.10);
+      --accent: #93c5fd;
+      --ok: #86efac;
+      --warn: #fcd34d;
+      --bad: #fca5a5;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+
+    header {
+      padding: 28px 24px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.92);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(10px);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 3vw, 38px);
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 1100px;
+    }
+
+    main {
+      padding: 22px;
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+
+    .controls, .cards, .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .controls {
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      margin-bottom: 16px;
+    }
+
+    .cards {
+      grid-template-columns: repeat(5, minmax(160px, 1fr));
+      margin-bottom: 16px;
+    }
+
+    .card, .control, .chart-card, .log {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 16px 45px rgba(0,0,0,0.18);
+    }
+
+    .control, .card {
+      padding: 15px 16px;
+    }
+
+    .control label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 7px;
+    }
+
+    input, select, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 11px;
+      font-size: 14px;
+    }
+
+    button {
+      cursor: pointer;
+      background: rgba(147,197,253,0.16);
+      border-color: rgba(147,197,253,0.35);
+      font-weight: 650;
+    }
+
+    button:hover { background: rgba(147,197,253,0.23); }
+
+    .card .label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .card .value {
+      font-size: 24px;
+      font-weight: 720;
+      letter-spacing: -0.02em;
+    }
+
+    .card .note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 7px;
+      line-height: 1.35;
+    }
+
+    .grid {
+      grid-template-columns: 1fr;
+    }
+
+    .chart-card {
+      padding: 16px 16px 10px;
+      min-height: 410px;
+    }
+
+    .chart-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin: 0 0 8px;
+    }
+
+    .chart-title h2 {
+      margin: 0;
+      font-size: 19px;
+      letter-spacing: -0.01em;
+    }
+
+    .chart-title span {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .plot {
+      width: 100%;
+      height: 360px;
+    }
+
+    .log {
+      margin-top: 16px;
+      padding: 14px 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
+    .status-bad { color: var(--bad); }
+
+    @media (max-width: 1050px) {
+      .controls { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+      .cards { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+    }
+
+    @media (max-width: 620px) {
+      header, main { padding-left: 14px; padding-right: 14px; }
+      .controls, .cards { grid-template-columns: 1fr; }
+      .chart-card { padding: 13px 10px 8px; }
+      .plot { height: 330px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dashboard temperatury — sensor i Lublin</h1>
+    <p class="subtitle">
+      Analiza danych z sensora ThingSpeak oraz temperatury zewnętrznej dla Lublina. Strona automatycznie pobiera dane bieżącego dnia, długi zakres godzinowy oraz agregaty tygodniowe.
+    </p>
+  </header>
+
+  <main>
+    <section class="controls" aria-label="Ustawienia pobierania danych">
+      <div class="control">
+        <label for="channelId">ThingSpeak Channel ID</label>
+        <input id="channelId" value="3317976" inputmode="numeric" />
+      </div>
+      <div class="control">
+        <label for="fieldName">Pole temperatury sensora</label>
+        <input id="fieldName" value="field1" />
+      </div>
+      <div class="control">
+        <label for="readKey">Read API Key, jeśli kanał jest prywatny</label>
+        <input id="readKey" value="" placeholder="zostaw puste dla kanału publicznego" />
+      </div>
+      <div class="control">
+        <label for="weeksBack">Liczba tygodni w nakładaniu</label>
+        <select id="weeksBack">
+          <option value="3">3 tygodnie</option>
+          <option value="4" selected>4 tygodnie</option>
+          <option value="6">6 tygodni</option>
+          <option value="8">8 tygodni</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="refreshMode">Odświeżanie</label>
+        <select id="refreshMode">
+          <option value="0" selected>ręczne</option>
+          <option value="300000">co 5 minut</option>
+          <option value="900000">co 15 minut</option>
+          <option value="1800000">co 30 minut</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="reloadButton">Pobieranie danych</label>
+        <button id="reloadButton">Pobierz i przelicz</button>
+      </div>
+    </section>
+
+    <section class="cards" aria-label="Podsumowanie">
+      <div class="card">
+        <div class="label">Ostatnia temperatura sensora</div>
+        <div id="lastSensor" class="value">—</div>
+        <div id="lastSensorNote" class="note">oczekiwanie na dane</div>
+      </div>
+      <div class="card">
+        <div class="label">Średnia dzisiaj — sensor</div>
+        <div id="todayAvgSensor" class="value">—</div>
+        <div class="note">liczona z surowych próbek bieżącego dnia</div>
+      </div>
+      <div class="card">
+        <div class="label">Średnia dzisiaj — Lublin</div>
+        <div id="todayAvgLublin" class="value">—</div>
+        <div class="note">temperatura powietrza 2 m</div>
+      </div>
+      <div class="card">
+        <div class="label">Zakres danych godzinowych</div>
+        <div id="rangeInfo" class="value">—</div>
+        <div class="note">po agregacji godzinowej</div>
+      </div>
+      <div class="card">
+        <div class="label">Status</div>
+        <div id="statusText" class="value">Start</div>
+        <div id="statusNote" class="note">strona gotowa do pobrania danych</div>
+      </div>
+    </section>
+
+    <section class="grid" aria-label="Wykresy">
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>1. Bieżący dzień — wszystkie dostępne próbki</h2>
+          <span>sensor surowy + temperatura Lublina dopasowana godzinowo</span>
+        </div>
+        <div id="plotToday" class="plot"></div>
+      </article>
+
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>2. Overlay dobowy z ostatnich 7 dni</h2>
+          <span>każdy dzień jako osobna linia, oś X = godzina dnia</span>
+        </div>
+        <div id="plotDailyOverlay" class="plot"></div>
+      </article>
+
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>3. Overlay tygodniowy — kolejne tygodnie na jednej osi</h2>
+          <span>oś X = godzina tygodnia, poniedziałek 00:00 → niedziela 23:00</span>
+        </div>
+        <div id="plotWeeklyOverlay" class="plot"></div>
+      </article>
+
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>4. Średnia temperatura tygodniowa</h2>
+          <span>sensor i Lublin, jeden punkt na tydzień</span>
+        </div>
+        <div id="plotWeeklyMean" class="plot"></div>
+      </article>
+
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>5. Zakres tygodniowy: minimum, średnia, maksimum</h2>
+          <span>kontrola rozrzutu temperatury w kolejnych tygodniach</span>
+        </div>
+        <div id="plotWeeklyMinMeanMax" class="plot"></div>
+      </article>
+
+      <article class="chart-card">
+        <div class="chart-title">
+          <h2>6. Dni tygodnia — średnia z minimów i maksimów</h2>
+          <span>typowy profil tygodnia na podstawie agregacji dziennej</span>
+        </div>
+        <div id="plotWeekdayStats" class="plot"></div>
+      </article>
+    </section>
+
+    <section id="log" class="log" aria-label="Log działania">Log działania pojawi się po pobraniu danych.</section>
+  </main>
+
+  <script>
+    // =====================================================================
+    // KONFIGURACJA PODSTAWOWA
+    // =====================================================================
+
+    const CONFIG = {
+      // Identyfikator kanału ThingSpeak. Domyślnie ustawiony na kanał z poprzedniego dashboardu.
+      channelId: "3317976",
+
+      // Pole z temperaturą sensora. Dla aktualnego założenia jest to field1.
+      sensorField: "field1",
+
+      // Klucz odczytu. Dla kanału publicznego pozostawić pusty ciąg znaków.
+      // Uwaga: wpisanie klucza w statycznej stronie opublikowanej publicznie ujawnia klucz w kodzie strony.
+      readApiKey: "",
+
+      // Strefa czasowa do prezentacji i agregacji wyników.
+      timezone: "Europe/Warsaw",
+
+      // Współrzędne Lublina używane do danych Open-Meteo.
+      lublin: {
+        latitude: 51.2465,
+        longitude: 22.5684
+      },
+
+      // Maksymalna liczba rekordów w pojedynczym odczycie ThingSpeak zgodna z dokumentacją API.
+      maxThingSpeakResults: 8000
+    };
+
+    // =====================================================================
+    // FUNKCJE POMOCNICZE — CZAS, FORMATOWANIE I STATYSTYKA
+    // =====================================================================
+
+    function log(message) {
+      const element = document.getElementById("log");
+      const now = new Date().toLocaleTimeString("pl-PL");
+      element.textContent += `\n[${now}] ${message}`;
+    }
+
+    function resetLog() {
+      document.getElementById("log").textContent = "Log działania:";
+    }
+
+    function setStatus(text, note, className = "") {
+      const statusText = document.getElementById("statusText");
+      const statusNote = document.getElementById("statusNote");
+      statusText.textContent = text;
+      statusText.className = `value ${className}`;
+      statusNote.textContent = note;
+    }
+
+    function readUiConfig() {
+      CONFIG.channelId = document.getElementById("channelId").value.trim();
+      CONFIG.sensorField = document.getElementById("fieldName").value.trim() || "field1";
+      CONFIG.readApiKey = document.getElementById("readKey").value.trim();
+      return CONFIG;
+    }
+
+    function parseNumber(value) {
+      if (value === null || value === undefined || value === "") return null;
+      const numeric = Number(String(value).replace(",", "."));
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    function average(values) {
+      const valid = values.filter(v => Number.isFinite(v));
+      if (!valid.length) return null;
+      return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+    }
+
+    function minValue(values) {
+      const valid = values.filter(v => Number.isFinite(v));
+      return valid.length ? Math.min(...valid) : null;
+    }
+
+    function maxValue(values) {
+      const valid = values.filter(v => Number.isFinite(v));
+      return valid.length ? Math.max(...valid) : null;
+    }
+
+    function formatTemperature(value) {
+      return Number.isFinite(value) ? `${value.toFixed(2)} °C` : "—";
+    }
+
+    function toLocalParts(date) {
+      // Funkcja celowo korzysta z Intl.DateTimeFormat, aby uzyskać stabilne części daty w strefie Europe/Warsaw.
+      const formatter = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: CONFIG.timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      const parts = Object.fromEntries(formatter.formatToParts(date).map(p => [p.type, p.value]));
+      return {
+        year: Number(parts.year),
+        month: Number(parts.month),
+        day: Number(parts.day),
+        hour: Number(parts.hour),
+        minute: Number(parts.minute),
+        second: Number(parts.second),
+        dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+        hourKey: `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:00`
+      };
+    }
+
+    function localDateKey(date) {
+      return toLocalParts(date).dateKey;
+    }
+
+    function localHourKey(date) {
+      return toLocalParts(date).hourKey;
+    }
+
+    function localHourOfDay(date) {
+      const p = toLocalParts(date);
+      return p.hour + p.minute / 60 + p.second / 3600;
+    }
+
+    function startOfTodayLocalAsUtcDate() {
+      // Dla zapytań ThingSpeak wygodniej jest przesłać datę w formacie lokalnym wraz z parametrem timezone.
+      const now = new Date();
+      const p = toLocalParts(now);
+      return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")} 00:00:00`;
+    }
+
+    function todayLocalDateKey() {
+      return localDateKey(new Date());
+    }
+
+    function addDaysToDateKey(dateKey, days) {
+      const [year, month, day] = dateKey.split("-").map(Number);
+      const date = new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0));
+      return date.toISOString().slice(0, 10);
+    }
+
+    function getWeekStartDateKey(date) {
+      // Poniedziałek jako początek tygodnia. Obliczenie odbywa się po częściach lokalnych.
+      const p = toLocalParts(date);
+      const localNoonUtc = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0));
+      const jsDay = localNoonUtc.getUTCDay();
+      const mondayOffset = jsDay === 0 ? -6 : 1 - jsDay;
+      const monday = new Date(Date.UTC(p.year, p.month - 1, p.day + mondayOffset, 12, 0, 0));
+      return monday.toISOString().slice(0, 10);
+    }
+
+    function weekHourIndex(date) {
+      const p = toLocalParts(date);
+      const localNoonUtc = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0));
+      const jsDay = localNoonUtc.getUTCDay();
+      const dayIndex = jsDay === 0 ? 6 : jsDay - 1;
+      return dayIndex * 24 + p.hour;
+    }
+
+    function weekdayIndex(date) {
+      const p = toLocalParts(date);
+      const localNoonUtc = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0));
+      const jsDay = localNoonUtc.getUTCDay();
+      return jsDay === 0 ? 6 : jsDay - 1;
+    }
+
+    function dateKeyToPolishLabel(dateKey) {
+      const [year, month, day] = dateKey.split("-").map(Number);
+      return new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).toLocaleDateString("pl-PL", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+      });
+    }
+
+    function weekHourLabel(index) {
+      const days = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"];
+      const day = Math.floor(index / 24);
+      const hour = index % 24;
+      return `${days[day]} ${String(hour).padStart(2, "0")}:00`;
+    }
+
+    function groupBy(items, keyFunction) {
+      const map = new Map();
+      for (const item of items) {
+        const key = keyFunction(item);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(item);
+      }
+      return map;
+    }
+
+    // =====================================================================
+    // POBIERANIE DANYCH
+    // =====================================================================
+
+    function buildThingSpeakUrl({ averageMinutes = null, start = null, end = null, results = CONFIG.maxThingSpeakResults }) {
+      const url = new URL(`https://api.thingspeak.com/channels/${CONFIG.channelId}/feeds.json`);
+      url.searchParams.set("results", String(results));
+      url.searchParams.set("timezone", CONFIG.timezone);
+      if (CONFIG.readApiKey) url.searchParams.set("api_key", CONFIG.readApiKey);
+      if (averageMinutes) url.searchParams.set("average", String(averageMinutes));
+      if (start) url.searchParams.set("start", start);
+      if (end) url.searchParams.set("end", end);
+      return url.toString();
+    }
+
+    async function fetchThingSpeak({ averageMinutes = null, start = null, end = null }) {
+      const url = buildThingSpeakUrl({ averageMinutes, start, end });
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`ThingSpeak HTTP ${response.status}`);
+      const data = await response.json();
+      if (data === -1 || data.feeds === -1) throw new Error("ThingSpeak zwrócił -1; prawdopodobnie brakuje dostępu do kanału prywatnego.");
+      const feeds = Array.isArray(data.feeds) ? data.feeds : [];
+      return feeds
+        .map(feed => ({
+          time: new Date(feed.created_at),
+          value: parseNumber(feed[CONFIG.sensorField]),
+          entryId: feed.entry_id
+        }))
+        .filter(row => row.time instanceof Date && !Number.isNaN(row.time.getTime()) && Number.isFinite(row.value));
+    }
+
+    async function fetchMeteoHourly(startDateKey, endDateKey) {
+      if (!startDateKey || !endDateKey) return [];
+      const url = new URL("https://archive-api.open-meteo.com/v1/archive");
+      url.searchParams.set("latitude", String(CONFIG.lublin.latitude));
+      url.searchParams.set("longitude", String(CONFIG.lublin.longitude));
+      url.searchParams.set("start_date", startDateKey);
+      url.searchParams.set("end_date", endDateKey);
+      url.searchParams.set("hourly", "temperature_2m");
+      url.searchParams.set("timezone", CONFIG.timezone);
+      const response = await fetch(url.toString(), { cache: "no-store" });
+      if (!response.ok) throw new Error(`Open-Meteo HTTP ${response.status}`);
+      const data = await response.json();
+      const times = data?.hourly?.time || [];
+      const temperatures = data?.hourly?.temperature_2m || [];
+      return times.map((time, index) => {
+        // Open-Meteo zwraca czas lokalny bez sufiksu strefy; do klucza godzinowego nie trzeba przeliczać na UTC.
+        const normalizedTime = String(time).replace("T", " ");
+        return {
+          localTimeText: normalizedTime,
+          hourKey: `${normalizedTime.slice(0, 13)}:00`,
+          dateKey: normalizedTime.slice(0, 10),
+          value: parseNumber(temperatures[index])
+        };
+      }).filter(row => Number.isFinite(row.value));
+    }
+
+    function makeMeteoMap(meteoHourly) {
+      const map = new Map();
+      for (const row of meteoHourly) map.set(row.hourKey, row.value);
+      return map;
+    }
+
+    // =====================================================================
+    // AGREGACJE
+    // =====================================================================
+
+    function attachLublinTemperature(sensorRows, meteoMap) {
+      return sensorRows.map(row => ({
+        ...row,
+        hourKey: localHourKey(row.time),
+        dateKey: localDateKey(row.time),
+        weekStart: getWeekStartDateKey(row.time),
+        hourOfDay: localHourOfDay(row.time),
+        weekHour: weekHourIndex(row.time),
+        weekday: weekdayIndex(row.time),
+        lublin: meteoMap.get(localHourKey(row.time)) ?? null
+      }));
+    }
+
+    function aggregateDaily(rows) {
+      const grouped = groupBy(rows, row => row.dateKey);
+      return [...grouped.entries()].map(([dateKey, items]) => ({
+        dateKey,
+        sensorMean: average(items.map(x => x.value)),
+        sensorMin: minValue(items.map(x => x.value)),
+        sensorMax: maxValue(items.map(x => x.value)),
+        lublinMean: average(items.map(x => x.lublin)),
+        lublinMin: minValue(items.map(x => x.lublin)),
+        lublinMax: maxValue(items.map(x => x.lublin)),
+        weekday: weekdayIndex(items[0].time),
+        count: items.length
+      })).sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    }
+
+    function aggregateWeekly(rows) {
+      const grouped = groupBy(rows, row => row.weekStart);
+      return [...grouped.entries()].map(([weekStart, items]) => ({
+        weekStart,
+        label: `od ${dateKeyToPolishLabel(weekStart)}`,
+        sensorMean: average(items.map(x => x.value)),
+        sensorMin: minValue(items.map(x => x.value)),
+        sensorMax: maxValue(items.map(x => x.value)),
+        lublinMean: average(items.map(x => x.lublin)),
+        lublinMin: minValue(items.map(x => x.lublin)),
+        lublinMax: maxValue(items.map(x => x.lublin)),
+        count: items.length
+      })).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+    }
+
+    function aggregateWeekdayStats(dailyRows) {
+      const grouped = groupBy(dailyRows, row => row.weekday);
+      return [0,1,2,3,4,5,6].map(index => {
+        const items = grouped.get(index) || [];
+        return {
+          weekday: index,
+          sensorMinMean: average(items.map(x => x.sensorMin)),
+          sensorMeanMean: average(items.map(x => x.sensorMean)),
+          sensorMaxMean: average(items.map(x => x.sensorMax)),
+          lublinMinMean: average(items.map(x => x.lublinMin)),
+          lublinMeanMean: average(items.map(x => x.lublinMean)),
+          lublinMaxMean: average(items.map(x => x.lublinMax))
+        };
+      });
+    }
+
+    function getLastNDays(rows, n) {
+      const unique = [...new Set(rows.map(row => row.dateKey))].sort();
+      const selected = new Set(unique.slice(-n));
+      return rows.filter(row => selected.has(row.dateKey));
+    }
+
+    function getLastNWeeks(rows, n) {
+      const unique = [...new Set(rows.map(row => row.weekStart))].sort();
+      const selected = new Set(unique.slice(-n));
+      return rows.filter(row => selected.has(row.weekStart));
+    }
+
+    // =====================================================================
+    // WYKRESY
+    // =====================================================================
+
+    function baseLayout(titleY = "Temperatura [°C]") {
+      return {
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: "#e5e7eb" },
+        margin: { l: 55, r: 25, t: 22, b: 55 },
+        legend: { orientation: "h", y: -0.22 },
+        xaxis: { gridcolor: "rgba(255,255,255,0.08)", zerolinecolor: "rgba(255,255,255,0.12)" },
+        yaxis: { title: titleY, gridcolor: "rgba(255,255,255,0.08)", zerolinecolor: "rgba(255,255,255,0.12)" },
+        hovermode: "x unified"
+      };
+    }
+
+    const plotConfig = {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["select2d", "lasso2d"]
+    };
+
+    function renderToday(todayRows) {
+      const x = todayRows.map(row => row.time);
+      const sensor = todayRows.map(row => row.value);
+      const lublin = todayRows.map(row => row.lublin);
+      const traces = [
+        { x, y: sensor, type: "scatter", mode: "lines+markers", name: "Sensor — próbki", line: { width: 2 } },
+        { x, y: lublin, type: "scatter", mode: "lines", name: "Lublin — temperatura godzinowa", line: { width: 2, dash: "dot" } }
+      ];
+      Plotly.newPlot("plotToday", traces, baseLayout(), plotConfig);
+    }
+
+    function renderDailyOverlay(rows) {
+      const selected = getLastNDays(rows, 7);
+      const grouped = groupBy(selected, row => row.dateKey);
+      const traces = [];
+      for (const [dateKey, items] of grouped.entries()) {
+        const sorted = items.slice().sort((a, b) => a.hourOfDay - b.hourOfDay);
+        traces.push({
+          x: sorted.map(row => row.hourOfDay),
+          y: sorted.map(row => row.value),
+          type: "scatter",
+          mode: "lines+markers",
+          name: `Sensor ${dateKeyToPolishLabel(dateKey)}`,
+          line: { width: 2 }
+        });
+      }
+      const layout = baseLayout();
+      layout.xaxis.title = "Godzina dnia";
+      layout.xaxis.tickmode = "array";
+      layout.xaxis.tickvals = [0,3,6,9,12,15,18,21,24];
+      layout.xaxis.ticktext = ["00", "03", "06", "09", "12", "15", "18", "21", "24"];
+      Plotly.newPlot("plotDailyOverlay", traces, layout, plotConfig);
+    }
+
+    function renderWeeklyOverlay(rows, weeksBack) {
+      const selected = getLastNWeeks(rows, weeksBack);
+      const grouped = groupBy(selected, row => row.weekStart);
+      const traces = [];
+      for (const [weekStart, items] of grouped.entries()) {
+        const byHour = groupBy(items, row => row.weekHour);
+        const x = [];
+        const ySensor = [];
+        const yLublin = [];
+        for (let i = 0; i < 168; i++) {
+          const bucket = byHour.get(i) || [];
+          x.push(i);
+          ySensor.push(average(bucket.map(row => row.value)));
+          yLublin.push(average(bucket.map(row => row.lublin)));
+        }
+        traces.push({
+          x,
+          y: ySensor,
+          type: "scatter",
+          mode: "lines",
+          name: `Sensor — tydzień od ${dateKeyToPolishLabel(weekStart)}`,
+          line: { width: 2 }
+        });
+        traces.push({
+          x,
+          y: yLublin,
+          type: "scatter",
+          mode: "lines",
+          name: `Lublin — tydzień od ${dateKeyToPolishLabel(weekStart)}`,
+          line: { width: 1.5, dash: "dot" },
+          opacity: 0.65
+        });
+      }
+      const layout = baseLayout();
+      layout.xaxis.title = "Godzina tygodnia";
+      layout.xaxis.tickmode = "array";
+      layout.xaxis.tickvals = [0, 24, 48, 72, 96, 120, 144, 167];
+      layout.xaxis.ticktext = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd", "Nd 23"];
+      Plotly.newPlot("plotWeeklyOverlay", traces, layout, plotConfig);
+    }
+
+    function renderWeeklyMean(weeklyRows) {
+      const x = weeklyRows.map(row => row.label);
+      const traces = [
+        { x, y: weeklyRows.map(row => row.sensorMean), type: "scatter", mode: "lines+markers", name: "Sensor — średnia tygodniowa", line: { width: 3 } },
+        { x, y: weeklyRows.map(row => row.lublinMean), type: "scatter", mode: "lines+markers", name: "Lublin — średnia tygodniowa", line: { width: 2, dash: "dot" } }
+      ];
+      const layout = baseLayout();
+      layout.xaxis.title = "Tydzień";
+      Plotly.newPlot("plotWeeklyMean", traces, layout, plotConfig);
+    }
+
+    function renderWeeklyMinMeanMax(weeklyRows) {
+      const x = weeklyRows.map(row => row.label);
+      const traces = [
+        { x, y: weeklyRows.map(row => row.sensorMin), type: "scatter", mode: "lines+markers", name: "Sensor — minimum", line: { width: 2 } },
+        { x, y: weeklyRows.map(row => row.sensorMean), type: "scatter", mode: "lines+markers", name: "Sensor — średnia", line: { width: 3 } },
+        { x, y: weeklyRows.map(row => row.sensorMax), type: "scatter", mode: "lines+markers", name: "Sensor — maksimum", line: { width: 2 } },
+        { x, y: weeklyRows.map(row => row.lublinMean), type: "scatter", mode: "lines+markers", name: "Lublin — średnia", line: { width: 2, dash: "dot" }, opacity: 0.70 }
+      ];
+      const layout = baseLayout();
+      layout.xaxis.title = "Tydzień";
+      Plotly.newPlot("plotWeeklyMinMeanMax", traces, layout, plotConfig);
+    }
+
+    function renderWeekdayStats(stats) {
+      const labels = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"];
+      const traces = [
+        { x: labels, y: stats.map(row => row.sensorMinMean), type: "bar", name: "Sensor — średnia z minimów" },
+        { x: labels, y: stats.map(row => row.sensorMeanMean), type: "scatter", mode: "lines+markers", name: "Sensor — średnia dzienna", line: { width: 3 } },
+        { x: labels, y: stats.map(row => row.sensorMaxMean), type: "bar", name: "Sensor — średnia z maksimów" },
+        { x: labels, y: stats.map(row => row.lublinMeanMean), type: "scatter", mode: "lines+markers", name: "Lublin — średnia dzienna", line: { width: 2, dash: "dot" } }
+      ];
+      const layout = baseLayout();
+      layout.barmode = "group";
+      layout.xaxis.title = "Dzień tygodnia";
+      Plotly.newPlot("plotWeekdayStats", traces, layout, plotConfig);
+    }
+
+    // =====================================================================
+    // KARTY PODSUMOWANIA
+    // =====================================================================
+
+    function updateCards(todayRows, hourlyRows, weeklyRows) {
+      const last = hourlyRows.slice().sort((a, b) => a.time - b.time).at(-1);
+      document.getElementById("lastSensor").textContent = formatTemperature(last?.value);
+      document.getElementById("lastSensorNote").textContent = last ? `ostatni punkt: ${last.time.toLocaleString("pl-PL")}` : "brak poprawnych danych";
+
+      document.getElementById("todayAvgSensor").textContent = formatTemperature(average(todayRows.map(row => row.value)));
+      document.getElementById("todayAvgLublin").textContent = formatTemperature(average(todayRows.map(row => row.lublin)));
+
+      if (hourlyRows.length) {
+        const first = hourlyRows[0].time.toLocaleDateString("pl-PL");
+        const lastDate = hourlyRows.at(-1).time.toLocaleDateString("pl-PL");
+        document.getElementById("rangeInfo").textContent = `${hourlyRows.length} h`;
+        document.getElementById("rangeInfo").nextElementSibling.textContent = `${first} — ${lastDate}`;
+      } else {
+        document.getElementById("rangeInfo").textContent = "—";
+      }
+
+      const lastWeek = weeklyRows.at(-1);
+      if (lastWeek) {
+        document.getElementById("statusNote").textContent = `ostatni tydzień: średnia sensora ${formatTemperature(lastWeek.sensorMean)}, liczba punktów godzinowych: ${lastWeek.count}`;
+      }
+    }
+
+    // =====================================================================
+    // GŁÓWNY PRZEPŁYW DZIAŁANIA
+    // =====================================================================
+
+    async function loadDashboard() {
+      readUiConfig();
+      resetLog();
+      setStatus("Pobieranie", "trwa pobieranie danych z ThingSpeak i Open-Meteo", "status-warn");
+
+      try {
+        log("Pobieram surowe dane z bieżącego dnia z ThingSpeak.");
+        const todayStart = startOfTodayLocalAsUtcDate();
+        const todayRaw = await fetchThingSpeak({ start: todayStart });
+        log(`Pobrano ${todayRaw.length} surowych próbek z bieżącego dnia.`);
+
+        log("Pobieram długi zakres godzinowy z ThingSpeak: average=60, results=8000.");
+        const hourlyRaw = await fetchThingSpeak({ averageMinutes: 60 });
+        hourlyRaw.sort((a, b) => a.time - b.time);
+        log(`Pobrano ${hourlyRaw.length} godzinowych punktów sensora.`);
+
+        if (!hourlyRaw.length && !todayRaw.length) {
+          throw new Error("Nie pobrano żadnych poprawnych wartości liczbowych z pola sensora.");
+        }
+
+        const allForRange = hourlyRaw.length ? hourlyRaw : todayRaw;
+        const startDateKey = localDateKey(allForRange[0].time);
+        const endDateKey = todayLocalDateKey();
+
+        log(`Pobieram temperaturę dla Lublina z Open-Meteo w zakresie ${startDateKey} — ${endDateKey}.`);
+        const meteoHourly = await fetchMeteoHourly(startDateKey, endDateKey);
+        const meteoMap = makeMeteoMap(meteoHourly);
+        log(`Pobrano ${meteoHourly.length} godzinowych punktów pogodowych dla Lublina.`);
+
+        const todayRows = attachLublinTemperature(todayRaw, meteoMap).sort((a, b) => a.time - b.time);
+        const hourlyRows = attachLublinTemperature(hourlyRaw, meteoMap).sort((a, b) => a.time - b.time);
+        const dailyRows = aggregateDaily(hourlyRows);
+        const weeklyRows = aggregateWeekly(hourlyRows);
+        const weekdayStats = aggregateWeekdayStats(dailyRows);
+        const weeksBack = Number(document.getElementById("weeksBack").value) || 4;
+
+        renderToday(todayRows);
+        renderDailyOverlay(hourlyRows);
+        renderWeeklyOverlay(hourlyRows, weeksBack);
+        renderWeeklyMean(weeklyRows);
+        renderWeeklyMinMeanMax(weeklyRows);
+        renderWeekdayStats(weekdayStats);
+        updateCards(todayRows, hourlyRows, weeklyRows);
+
+        const lublinMatches = hourlyRows.filter(row => Number.isFinite(row.lublin)).length;
+        log(`Dopasowano temperaturę Lublina do ${lublinMatches} z ${hourlyRows.length} godzinowych punktów sensora.`);
+        setStatus("Gotowe", "dane pobrane, agregaty przeliczone, wykresy odświeżone", "status-ok");
+      } catch (error) {
+        console.error(error);
+        log(`Błąd: ${error.message}`);
+        setStatus("Błąd", error.message, "status-bad");
+      }
+    }
+
+    let refreshTimer = null;
+
+    function configureRefresh() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      const interval = Number(document.getElementById("refreshMode").value);
+      if (interval > 0) refreshTimer = setInterval(loadDashboard, interval);
+    }
+
+    document.getElementById("reloadButton").addEventListener("click", loadDashboard);
+    document.getElementById("refreshMode").addEventListener("change", configureRefresh);
+
+    // Pierwsze pobranie wykonuje się automatycznie po otwarciu strony.
+    loadDashboard();
+  </script>
+</body>
+</html>
