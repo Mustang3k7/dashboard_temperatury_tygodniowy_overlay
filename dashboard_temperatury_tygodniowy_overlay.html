@@ -1,22 +1,25 @@
 <!--
   Nazwa: dashboard_temperatury_tygodniowy_overlay.html
   Cel: jednoplikowy dashboard HTML do analizy temperatury z sensora ThingSpeak oraz temperatury zewnętrznej dla Lublina.
-  Użycie: plik należy zapisać jako index.html albo inna_nazwa.html i otworzyć w przeglądarce; może działać lokalnie oraz na GitHub Pages.
+  Użycie: plik należy zapisać jako index.html albo dashboard_temperatury_tygodniowy_overlay.html i otworzyć w przeglądarce; może działać lokalnie oraz na GitHub Pages.
   Uruchomienie: ustawić CHANNEL_ID, SENSOR_FIELD oraz ewentualnie READ_API_KEY w sekcji KONFIGURACJA, następnie otworzyć plik w przeglądarce.
   Wymagania: dostęp do internetu, przeglądarka z obsługą JavaScript, publiczny kanał ThingSpeak albo poprawny Read API Key, zewnętrzna biblioteka Plotly ładowana z CDN.
-  Wynik: strona automatycznie pobiera dane, przelicza agregaty godzinowe/dzienne/tygodniowe i rysuje wykresy porównawcze.
+  Wynik: strona automatycznie pobiera dane od początku kanału ThingSpeak, przelicza dane godzinowe/dzienne/tygodniowe i rysuje wykresy porównawcze.
   Zatrzymanie: zamknąć kartę przeglądarki; strona nie wykonuje działań w tle po zamknięciu.
   Uwagi: jeżeli kanał ThingSpeak jest prywatny, wpisanie READ_API_KEY w kodzie strony opublikowanej na GitHub Pages ujawnia ten klucz każdej osobie, która otworzy stronę lub źródło strony. Dla danych wrażliwych właściwszy jest mały backend/proxy.
   Data: 2026-05-19
   Status: prototyp
   Założenia i sposób rozumienia działania:
   - temperatura sensora jest w polu field1 kanału ThingSpeak 3317976;
-  - do długiego zakresu pobierane są dane godzinowe z ThingSpeak przez parametr average=60, z maksymalną liczbą wyników wynikającą z API;
-  - do bieżącego dnia pobierane są dane surowe od północy czasu Europe/Warsaw, ponieważ liczba próbek z jednego dnia zwykle mieści się w limicie;
+  - wcześniejsza wersja pobierała average=60 razem z results=8000, co ograniczało zakres do ostatnich 8000 surowych wpisów;
+  - obecna wersja pobiera zakres automatycznie od daty utworzenia kanału albo od daty wpisanej ręcznie;
+  - długi zakres jest pobierany jako surowe dane w krótkich oknach czasowych, a średnie godzinowe są liczone lokalnie w przeglądarce;
+  - do bieżącego dnia pobierane są dane surowe od północy czasu Europe/Warsaw;
   - temperatura dla Lublina pochodzi z Open-Meteo i jest dopasowywana do danych sensora po godzinie lokalnej;
   - wykresy tygodniowe porównują kolejne tygodnie w układzie poniedziałek 00:00 do niedziela 23:00;
   - średnie, minima i maksima liczone są wyłącznie z poprawnych wartości liczbowych;
-  - jeżeli brakuje danych pogodowych lub sensora, wykres nadal się rysuje, ale odpowiednie serie mogą mieć przerwy.
+  - opcje techniczne są zwinięte w panel ustawień, żeby nie zajmowały miejsca na górze dashboardu;
+  - podczas pobierania wyświetlany jest pasek postępu z czasem trwania, szacowanym czasem pozostałym i numerem aktualnie pobieranego okna.
 -->
 <!doctype html>
 <html lang="pl">
@@ -68,7 +71,7 @@
       margin: 0;
       color: var(--muted);
       line-height: 1.5;
-      max-width: 1100px;
+      max-width: 1180px;
     }
 
     main {
@@ -77,30 +80,119 @@
       margin: 0 auto;
     }
 
-    .controls, .cards, .grid {
-      display: grid;
-      gap: 14px;
-    }
-
-    .controls {
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      margin-bottom: 16px;
-    }
-
-    .cards {
-      grid-template-columns: repeat(5, minmax(160px, 1fr));
-      margin-bottom: 16px;
-    }
-
-    .card, .control, .chart-card, .log {
+    .settings-panel, .progress-panel, .card, .chart-card, .log {
       background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
       border: 1px solid var(--line);
       border-radius: 18px;
       box-shadow: 0 16px 45px rgba(0,0,0,0.18);
     }
 
+    .settings-panel {
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    .settings-panel summary {
+      cursor: pointer;
+      padding: 14px 17px;
+      color: var(--text);
+      font-weight: 700;
+      list-style-position: inside;
+      border-bottom: 1px solid transparent;
+    }
+
+    .settings-panel[open] summary {
+      border-bottom-color: var(--line);
+    }
+
+    .settings-note {
+      padding: 0 17px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .controls, .cards, .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .progress-panel {
+      margin-bottom: 16px;
+      padding: 15px 17px;
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 14px;
+      margin-bottom: 10px;
+    }
+
+    .progress-title {
+      font-weight: 700;
+    }
+
+    .progress-percent {
+      color: var(--accent);
+      font-weight: 720;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, rgba(147,197,253,0.65), rgba(134,239,172,0.75));
+      border-radius: 999px;
+      transition: width 180ms linear;
+    }
+
+    .progress-meta {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 10px;
+      margin-top: 11px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .progress-meta strong {
+      display: block;
+      color: var(--text);
+      font-size: 13px;
+      margin-top: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .controls {
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      padding: 15px 17px 16px;
+    }
+
+    .cards {
+      grid-template-columns: repeat(6, minmax(150px, 1fr));
+      margin-bottom: 16px;
+    }
+
     .control, .card {
       padding: 15px 16px;
+    }
+
+    .control {
+      background: rgba(255,255,255,0.035);
+      border: 1px solid var(--line);
+      border-radius: 16px;
     }
 
     .control label {
@@ -179,7 +271,7 @@
 
     .plot {
       width: 100%;
-      height: 360px;
+      height: 380px;
     }
 
     .log {
@@ -195,16 +287,16 @@
     .status-warn { color: var(--warn); }
     .status-bad { color: var(--bad); }
 
-    @media (max-width: 1050px) {
+    @media (max-width: 1180px) {
+      .cards { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
       .controls { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
-      .cards { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
     }
 
-    @media (max-width: 620px) {
+    @media (max-width: 700px) {
       header, main { padding-left: 14px; padding-right: 14px; }
-      .controls, .cards { grid-template-columns: 1fr; }
+      .controls, .cards, .progress-meta { grid-template-columns: 1fr; }
       .chart-card { padding: 13px 10px 8px; }
-      .plot { height: 330px; }
+      .plot { height: 340px; }
     }
   </style>
 </head>
@@ -212,45 +304,80 @@
   <header>
     <h1>Dashboard temperatury — sensor i Lublin</h1>
     <p class="subtitle">
-      Analiza danych z sensora ThingSpeak oraz temperatury zewnętrznej dla Lublina. Strona automatycznie pobiera dane bieżącego dnia, długi zakres godzinowy oraz agregaty tygodniowe.
+      Analiza danych z sensora ThingSpeak oraz temperatury zewnętrznej dla Lublina. Strona pobiera pełny zakres godzinowy od początku kanału lub od daty wpisanej ręcznie, a następnie tworzy agregaty dobowe i tygodniowe.
     </p>
   </header>
 
   <main>
-    <section class="controls" aria-label="Ustawienia pobierania danych">
-      <div class="control">
-        <label for="channelId">ThingSpeak Channel ID</label>
-        <input id="channelId" value="3317976" inputmode="numeric" />
+    <details class="settings-panel">
+      <summary>Ustawienia techniczne i pobieranie danych</summary>
+      <div class="settings-note">
+        Panel jest domyślnie zwinięty. Dla pełniejszej historii strona pobiera surowe dane w krótkich oknach czasowych i dopiero lokalnie wylicza średnie godzinowe, dobowe oraz tygodniowe. Domyślne okno 1 dzień ogranicza ryzyko ucięcia danych przez limit 8000 wpisów w pojedynczym zapytaniu ThingSpeak.
       </div>
-      <div class="control">
-        <label for="fieldName">Pole temperatury sensora</label>
-        <input id="fieldName" value="field1" />
+      <section class="controls" aria-label="Ustawienia pobierania danych">
+        <div class="control">
+          <label for="channelId">ThingSpeak Channel ID</label>
+          <input id="channelId" value="3317976" inputmode="numeric" />
+        </div>
+        <div class="control">
+          <label for="fieldName">Pole temperatury sensora</label>
+          <input id="fieldName" value="field1" />
+        </div>
+        <div class="control">
+          <label for="readKey">Read API Key, jeśli kanał jest prywatny</label>
+          <input id="readKey" value="" placeholder="zostaw puste dla kanału publicznego" />
+        </div>
+        <div class="control">
+          <label for="manualStartDate">Ręczna data początku, opcjonalnie</label>
+          <input id="manualStartDate" type="date" value="" />
+        </div>
+        <div class="control">
+          <label for="weeksBack">Liczba tygodni w nakładaniu</label>
+          <select id="weeksBack">
+            <option value="3">3 tygodnie</option>
+            <option value="4" selected>4 tygodnie</option>
+            <option value="6">6 tygodni</option>
+            <option value="8">8 tygodni</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="chunkDays">Długość okna pobierania surowych danych</label>
+          <select id="chunkDays">
+            <option value="1" selected>1 dzień — najbezpieczniej</option>
+            <option value="2">2 dni</option>
+            <option value="3">3 dni</option>
+            <option value="7">7 dni — szybciej, ale większe ryzyko ucięcia</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="refreshMode">Odświeżanie</label>
+          <select id="refreshMode">
+            <option value="0" selected>ręczne</option>
+            <option value="300000">co 5 minut</option>
+            <option value="900000">co 15 minut</option>
+            <option value="1800000">co 30 minut</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="reloadButton">Pobieranie danych</label>
+          <button id="reloadButton">Pobierz i przelicz</button>
+        </div>
+      </section>
+    </details>
+
+    <section class="progress-panel" aria-label="Postęp pobierania danych">
+      <div class="progress-header">
+        <div id="progressTitle" class="progress-title">Postęp pobierania</div>
+        <div id="progressPercent" class="progress-percent">0%</div>
       </div>
-      <div class="control">
-        <label for="readKey">Read API Key, jeśli kanał jest prywatny</label>
-        <input id="readKey" value="" placeholder="zostaw puste dla kanału publicznego" />
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Postęp pobierania">
+        <div id="progressFill" class="progress-fill"></div>
       </div>
-      <div class="control">
-        <label for="weeksBack">Liczba tygodni w nakładaniu</label>
-        <select id="weeksBack">
-          <option value="3">3 tygodnie</option>
-          <option value="4" selected>4 tygodnie</option>
-          <option value="6">6 tygodni</option>
-          <option value="8">8 tygodni</option>
-        </select>
-      </div>
-      <div class="control">
-        <label for="refreshMode">Odświeżanie</label>
-        <select id="refreshMode">
-          <option value="0" selected>ręczne</option>
-          <option value="300000">co 5 minut</option>
-          <option value="900000">co 15 minut</option>
-          <option value="1800000">co 30 minut</option>
-        </select>
-      </div>
-      <div class="control">
-        <label for="reloadButton">Pobieranie danych</label>
-        <button id="reloadButton">Pobierz i przelicz</button>
+      <div class="progress-meta">
+        <div>Etap<strong id="progressStep">oczekiwanie</strong></div>
+        <div>Czas trwania<strong id="progressElapsed">00:00</strong></div>
+        <div>Szacowany czas pozostały<strong id="progressRemaining">—</strong></div>
+        <div>Aktualne okno<strong id="progressWindow">—</strong></div>
       </div>
     </section>
 
@@ -274,6 +401,11 @@
         <div class="label">Zakres danych godzinowych</div>
         <div id="rangeInfo" class="value">—</div>
         <div class="note">po agregacji godzinowej</div>
+      </div>
+      <div class="card">
+        <div class="label">Liczba punktów</div>
+        <div id="pointsInfo" class="value">—</div>
+        <div id="pointsNote" class="note">surowe / godzinowe / dobowe / tygodniowe</div>
       </div>
       <div class="card">
         <div class="label">Status</div>
@@ -341,27 +473,12 @@
     // =====================================================================
 
     const CONFIG = {
-      // Identyfikator kanału ThingSpeak. Domyślnie ustawiony na kanał z poprzedniego dashboardu.
       channelId: "3317976",
-
-      // Pole z temperaturą sensora. Dla aktualnego założenia jest to field1.
       sensorField: "field1",
-
-      // Klucz odczytu. Dla kanału publicznego pozostawić pusty ciąg znaków.
-      // Uwaga: wpisanie klucza w statycznej stronie opublikowanej publicznie ujawnia klucz w kodzie strony.
       readApiKey: "",
-
-      // Strefa czasowa do prezentacji i agregacji wyników.
       timezone: "Europe/Warsaw",
-
-      // Współrzędne Lublina używane do danych Open-Meteo.
-      lublin: {
-        latitude: 51.2465,
-        longitude: 22.5684
-      },
-
-      // Maksymalna liczba rekordów w pojedynczym odczycie ThingSpeak zgodna z dokumentacją API.
-      maxThingSpeakResults: 8000
+      lublin: { latitude: 51.2465, longitude: 22.5684 },
+      chunkDays: 30
     };
 
     // =====================================================================
@@ -371,7 +488,8 @@
     function log(message) {
       const element = document.getElementById("log");
       const now = new Date().toLocaleTimeString("pl-PL");
-      element.textContent += `\n[${now}] ${message}`;
+      element.textContent += `
+[${now}] ${message}`;
     }
 
     function resetLog() {
@@ -386,10 +504,92 @@
       statusNote.textContent = note;
     }
 
+    const PROGRESS = {
+      startedAt: null,
+      finishedAt: null,
+      current: 0,
+      total: 1,
+      label: "oczekiwanie",
+      detail: "—",
+      timerId: null
+    };
+
+    function formatDuration(milliseconds) {
+      if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+      const totalSeconds = Math.round(milliseconds / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+      }
+      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    function renderProgress() {
+      const now = PROGRESS.finishedAt || Date.now();
+      const elapsed = PROGRESS.startedAt ? now - PROGRESS.startedAt : 0;
+      const total = Math.max(PROGRESS.total, 1);
+      const current = Math.min(Math.max(PROGRESS.current, 0), total);
+      const percent = Math.round((current / total) * 100);
+      const remaining = current > 0 && current < total
+        ? Math.max(0, (elapsed / current) * (total - current))
+        : current >= total ? 0 : NaN;
+
+      document.getElementById("progressTitle").textContent = PROGRESS.label;
+      document.getElementById("progressPercent").textContent = `${percent}%`;
+      document.getElementById("progressFill").style.width = `${percent}%`;
+      document.querySelector(".progress-track").setAttribute("aria-valuenow", String(percent));
+      document.getElementById("progressStep").textContent = `${current} / ${total}`;
+      document.getElementById("progressElapsed").textContent = formatDuration(elapsed);
+      document.getElementById("progressRemaining").textContent = Number.isFinite(remaining) ? formatDuration(remaining) : "—";
+      document.getElementById("progressWindow").textContent = PROGRESS.detail;
+    }
+
+    function startProgress(total, label, detail = "—") {
+      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
+      PROGRESS.startedAt = Date.now();
+      PROGRESS.finishedAt = null;
+      PROGRESS.current = 0;
+      PROGRESS.total = Math.max(Number(total) || 1, 1);
+      PROGRESS.label = label;
+      PROGRESS.detail = detail;
+      PROGRESS.timerId = setInterval(renderProgress, 1000);
+      renderProgress();
+    }
+
+    function updateProgress(current, total, label, detail = "—") {
+      PROGRESS.current = Math.min(Math.max(Number(current) || 0, 0), Math.max(Number(total) || PROGRESS.total, 1));
+      PROGRESS.total = Math.max(Number(total) || PROGRESS.total, 1);
+      PROGRESS.label = label;
+      PROGRESS.detail = detail;
+      renderProgress();
+    }
+
+    function finishProgress(label, detail = "zakończono") {
+      PROGRESS.current = PROGRESS.total;
+      PROGRESS.label = label;
+      PROGRESS.detail = detail;
+      PROGRESS.finishedAt = Date.now();
+      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
+      PROGRESS.timerId = null;
+      renderProgress();
+    }
+
+    function failProgress(label, detail = "przerwano") {
+      PROGRESS.label = label;
+      PROGRESS.detail = detail;
+      PROGRESS.finishedAt = Date.now();
+      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
+      PROGRESS.timerId = null;
+      renderProgress();
+    }
+
     function readUiConfig() {
       CONFIG.channelId = document.getElementById("channelId").value.trim();
       CONFIG.sensorField = document.getElementById("fieldName").value.trim() || "field1";
       CONFIG.readApiKey = document.getElementById("readKey").value.trim();
+      CONFIG.chunkDays = Number(document.getElementById("chunkDays").value) || 30;
       return CONFIG;
     }
 
@@ -419,8 +619,17 @@
       return Number.isFinite(value) ? `${value.toFixed(2)} °C` : "—";
     }
 
+    function formatDateTimeForThingSpeak(date) {
+      const y = date.getUTCFullYear();
+      const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const d = String(date.getUTCDate()).padStart(2, "0");
+      const h = String(date.getUTCHours()).padStart(2, "0");
+      const min = String(date.getUTCMinutes()).padStart(2, "0");
+      const s = String(date.getUTCSeconds()).padStart(2, "0");
+      return `${y}-${m}-${d} ${h}:${min}:${s}`;
+    }
+
     function toLocalParts(date) {
-      // Funkcja celowo korzysta z Intl.DateTimeFormat, aby uzyskać stabilne części daty w strefie Europe/Warsaw.
       const formatter = new Intl.DateTimeFormat("sv-SE", {
         timeZone: CONFIG.timezone,
         year: "numeric",
@@ -444,13 +653,8 @@
       };
     }
 
-    function localDateKey(date) {
-      return toLocalParts(date).dateKey;
-    }
-
-    function localHourKey(date) {
-      return toLocalParts(date).hourKey;
-    }
+    function localDateKey(date) { return toLocalParts(date).dateKey; }
+    function localHourKey(date) { return toLocalParts(date).hourKey; }
 
     function localHourOfDay(date) {
       const p = toLocalParts(date);
@@ -458,24 +662,14 @@
     }
 
     function startOfTodayLocalAsUtcDate() {
-      // Dla zapytań ThingSpeak wygodniej jest przesłać datę w formacie lokalnym wraz z parametrem timezone.
       const now = new Date();
       const p = toLocalParts(now);
       return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")} 00:00:00`;
     }
 
-    function todayLocalDateKey() {
-      return localDateKey(new Date());
-    }
-
-    function addDaysToDateKey(dateKey, days) {
-      const [year, month, day] = dateKey.split("-").map(Number);
-      const date = new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0));
-      return date.toISOString().slice(0, 10);
-    }
+    function todayLocalDateKey() { return localDateKey(new Date()); }
 
     function getWeekStartDateKey(date) {
-      // Poniedziałek jako początek tygodnia. Obliczenie odbywa się po częściach lokalnych.
       const p = toLocalParts(date);
       const localNoonUtc = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0));
       const jsDay = localNoonUtc.getUTCDay();
@@ -502,17 +696,8 @@
     function dateKeyToPolishLabel(dateKey) {
       const [year, month, day] = dateKey.split("-").map(Number);
       return new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).toLocaleDateString("pl-PL", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
+        day: "2-digit", month: "2-digit", year: "numeric"
       });
-    }
-
-    function weekHourLabel(index) {
-      const days = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"];
-      const day = Math.floor(index / 24);
-      const hour = index % 24;
-      return `${days[day]} ${String(hour).padStart(2, "0")}:00`;
     }
 
     function groupBy(items, keyFunction) {
@@ -525,27 +710,65 @@
       return map;
     }
 
+    function makeDateWindows(startDate, endDate, chunkDays) {
+      const windows = [];
+      let cursor = new Date(startDate.getTime());
+      while (cursor < endDate) {
+        const next = new Date(cursor.getTime() + chunkDays * 24 * 60 * 60 * 1000);
+        const windowEnd = next < endDate ? next : endDate;
+        windows.push({ start: new Date(cursor.getTime()), end: new Date(windowEnd.getTime()) });
+        cursor = new Date(windowEnd.getTime() + 1000);
+      }
+      return windows;
+    }
+
+    function uniqueHourlyRows(rows) {
+      const map = new Map();
+      for (const row of rows) {
+        const key = localHourKey(row.time);
+        if (!map.has(key)) map.set(key, row);
+      }
+      return [...map.values()].sort((a, b) => a.time - b.time);
+    }
+
+    function aggregateHourlyFromRaw(rawRows) {
+      const grouped = groupBy(rawRows, row => localHourKey(row.time));
+      return [...grouped.entries()].map(([hourKey, items]) => {
+        const sortedItems = items.slice().sort((a, b) => a.time - b.time);
+        return {
+          time: sortedItems[0].time,
+          value: average(sortedItems.map(item => item.value)),
+          count: sortedItems.length,
+          hourKey
+        };
+      }).sort((a, b) => a.time - b.time);
+    }
+
     // =====================================================================
     // POBIERANIE DANYCH
     // =====================================================================
 
-    function buildThingSpeakUrl({ averageMinutes = null, start = null, end = null, results = CONFIG.maxThingSpeakResults }) {
+    function buildThingSpeakUrl({ averageMinutes = null, start = null, end = null, results = null }) {
       const url = new URL(`https://api.thingspeak.com/channels/${CONFIG.channelId}/feeds.json`);
-      url.searchParams.set("results", String(results));
       url.searchParams.set("timezone", CONFIG.timezone);
       if (CONFIG.readApiKey) url.searchParams.set("api_key", CONFIG.readApiKey);
+      if (results !== null) url.searchParams.set("results", String(results));
       if (averageMinutes) url.searchParams.set("average", String(averageMinutes));
       if (start) url.searchParams.set("start", start);
       if (end) url.searchParams.set("end", end);
       return url.toString();
     }
 
-    async function fetchThingSpeak({ averageMinutes = null, start = null, end = null }) {
-      const url = buildThingSpeakUrl({ averageMinutes, start, end });
+    async function fetchThingSpeakJson(params) {
+      const url = buildThingSpeakUrl(params);
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) throw new Error(`ThingSpeak HTTP ${response.status}`);
       const data = await response.json();
       if (data === -1 || data.feeds === -1) throw new Error("ThingSpeak zwrócił -1; prawdopodobnie brakuje dostępu do kanału prywatnego.");
+      return data;
+    }
+
+    function parseThingSpeakFeeds(data) {
       const feeds = Array.isArray(data.feeds) ? data.feeds : [];
       return feeds
         .map(feed => ({
@@ -554,6 +777,52 @@
           entryId: feed.entry_id
         }))
         .filter(row => row.time instanceof Date && !Number.isNaN(row.time.getTime()) && Number.isFinite(row.value));
+    }
+
+    async function fetchChannelInfo() {
+      const data = await fetchThingSpeakJson({ results: 1 });
+      const createdAt = data?.channel?.created_at ? new Date(data.channel.created_at) : null;
+      const lastEntryId = data?.channel?.last_entry_id ?? null;
+      if (!createdAt || Number.isNaN(createdAt.getTime())) {
+        throw new Error("Nie udało się odczytać daty utworzenia kanału ThingSpeak.");
+      }
+      return { createdAt, lastEntryId };
+    }
+
+    async function fetchTodayRaw() {
+      const start = startOfTodayLocalAsUtcDate();
+      const data = await fetchThingSpeakJson({ start, results: 8000 });
+      return parseThingSpeakFeeds(data).sort((a, b) => a.time - b.time);
+    }
+
+    async function fetchRawHistory(windows, chunkDays, progressOffset, progressTotal) {
+      const allRows = [];
+      log(`Zakres historii podzielony na ${windows.length} okien po maksymalnie ${chunkDays} dni.`);
+      log("Pobieram surowe dane i lokalnie wyliczam średnie godzinowe. To jest wolniejsze, ale dokładniejsze niż poleganie na average=60 z API.");
+
+      for (let i = 0; i < windows.length; i++) {
+        const window = windows[i];
+        const startText = formatDateTimeForThingSpeak(window.start);
+        const endText = formatDateTimeForThingSpeak(window.end);
+        updateProgress(progressOffset + i, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
+        log(`Okno ${i + 1}/${windows.length}: ${startText} — ${endText}`);
+        const data = await fetchThingSpeakJson({ start: startText, end: endText, results: 8000 });
+        const rows = parseThingSpeakFeeds(data);
+        if (rows.length >= 7900) {
+          log("  Ostrzeżenie: pobrano prawie 8000 wpisów. To okno mogło zostać ucięte przez limit ThingSpeak. Ustaw krótsze okno, najlepiej 1 dzień.");
+        }
+        log(`  Pobrano ${rows.length} surowych próbek.`);
+        allRows.push(...rows);
+        updateProgress(progressOffset + i + 1, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
+      }
+
+      const byEntryId = new Map();
+      const withoutEntryId = [];
+      for (const row of allRows) {
+        if (row.entryId !== null && row.entryId !== undefined) byEntryId.set(row.entryId, row);
+        else withoutEntryId.push(row);
+      }
+      return [...byEntryId.values(), ...withoutEntryId].sort((a, b) => a.time - b.time);
     }
 
     async function fetchMeteoHourly(startDateKey, endDateKey) {
@@ -571,7 +840,6 @@
       const times = data?.hourly?.time || [];
       const temperatures = data?.hourly?.temperature_2m || [];
       return times.map((time, index) => {
-        // Open-Meteo zwraca czas lokalny bez sufiksu strefy; do klucza godzinowego nie trzeba przeliczać na UTC.
         const normalizedTime = String(time).replace("T", " ");
         return {
           localTimeText: normalizedTime,
@@ -680,19 +948,12 @@
       };
     }
 
-    const plotConfig = {
-      responsive: true,
-      displaylogo: false,
-      modeBarButtonsToRemove: ["select2d", "lasso2d"]
-    };
+    const plotConfig = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["select2d", "lasso2d"] };
 
     function renderToday(todayRows) {
-      const x = todayRows.map(row => row.time);
-      const sensor = todayRows.map(row => row.value);
-      const lublin = todayRows.map(row => row.lublin);
       const traces = [
-        { x, y: sensor, type: "scatter", mode: "lines+markers", name: "Sensor — próbki", line: { width: 2 } },
-        { x, y: lublin, type: "scatter", mode: "lines", name: "Lublin — temperatura godzinowa", line: { width: 2, dash: "dot" } }
+        { x: todayRows.map(row => row.time), y: todayRows.map(row => row.value), type: "scatter", mode: "lines+markers", name: "Sensor — próbki", line: { width: 2 } },
+        { x: todayRows.map(row => row.time), y: todayRows.map(row => row.lublin), type: "scatter", mode: "lines", name: "Lublin — temperatura godzinowa", line: { width: 2, dash: "dot" } }
       ];
       Plotly.newPlot("plotToday", traces, baseLayout(), plotConfig);
     }
@@ -735,23 +996,8 @@
           ySensor.push(average(bucket.map(row => row.value)));
           yLublin.push(average(bucket.map(row => row.lublin)));
         }
-        traces.push({
-          x,
-          y: ySensor,
-          type: "scatter",
-          mode: "lines",
-          name: `Sensor — tydzień od ${dateKeyToPolishLabel(weekStart)}`,
-          line: { width: 2 }
-        });
-        traces.push({
-          x,
-          y: yLublin,
-          type: "scatter",
-          mode: "lines",
-          name: `Lublin — tydzień od ${dateKeyToPolishLabel(weekStart)}`,
-          line: { width: 1.5, dash: "dot" },
-          opacity: 0.65
-        });
+        traces.push({ x, y: ySensor, type: "scatter", mode: "lines", name: `Sensor — tydzień od ${dateKeyToPolishLabel(weekStart)}`, line: { width: 2 } });
+        traces.push({ x, y: yLublin, type: "scatter", mode: "lines", name: `Lublin — tydzień od ${dateKeyToPolishLabel(weekStart)}`, line: { width: 1.5, dash: "dot" }, opacity: 0.65 });
       }
       const layout = baseLayout();
       layout.xaxis.title = "Godzina tygodnia";
@@ -803,19 +1049,24 @@
     // KARTY PODSUMOWANIA
     // =====================================================================
 
-    function updateCards(todayRows, hourlyRows, weeklyRows) {
-      const last = hourlyRows.slice().sort((a, b) => a.time - b.time).at(-1);
+    function updateCards(todayRows, rawRows, hourlyRows, dailyRows, weeklyRows, channelInfo) {
+      const last = rawRows.length
+        ? rawRows.slice().sort((a, b) => a.time - b.time).at(-1)
+        : hourlyRows.slice().sort((a, b) => a.time - b.time).at(-1);
+
       document.getElementById("lastSensor").textContent = formatTemperature(last?.value);
       document.getElementById("lastSensorNote").textContent = last ? `ostatni punkt: ${last.time.toLocaleString("pl-PL")}` : "brak poprawnych danych";
-
       document.getElementById("todayAvgSensor").textContent = formatTemperature(average(todayRows.map(row => row.value)));
       document.getElementById("todayAvgLublin").textContent = formatTemperature(average(todayRows.map(row => row.lublin)));
+
+      document.getElementById("pointsInfo").textContent = `${rawRows.length} / ${hourlyRows.length}`;
+      document.getElementById("pointsNote").innerHTML = `surowe: ${rawRows.length}<br>godzinowe: ${hourlyRows.length}<br>średnie dobowe: ${dailyRows.length}<br>średnie tygodniowe: ${weeklyRows.length}`;
 
       if (hourlyRows.length) {
         const first = hourlyRows[0].time.toLocaleDateString("pl-PL");
         const lastDate = hourlyRows.at(-1).time.toLocaleDateString("pl-PL");
-        document.getElementById("rangeInfo").textContent = `${hourlyRows.length} h`;
-        document.getElementById("rangeInfo").nextElementSibling.textContent = `${first} — ${lastDate}`;
+        document.getElementById("rangeInfo").textContent = `${first}`;
+        document.getElementById("rangeInfo").nextElementSibling.textContent = `do ${lastDate}; kanał od ${channelInfo.createdAt.toLocaleDateString("pl-PL")}`;
       } else {
         document.getElementById("rangeInfo").textContent = "—";
       }
@@ -833,20 +1084,36 @@
     async function loadDashboard() {
       readUiConfig();
       resetLog();
-      setStatus("Pobieranie", "trwa pobieranie danych z ThingSpeak i Open-Meteo", "status-warn");
+      setStatus("Pobieranie", "trwa pobieranie pełnej historii godzinowej", "status-warn");
+      startProgress(1, "Pobieranie metadanych", "kanał ThingSpeak");
 
       try {
+        log("Pobieram metadane kanału ThingSpeak, w tym datę utworzenia kanału i ostatni numer wpisu.");
+        const channelInfo = await fetchChannelInfo();
+        log(`Kanał utworzony: ${channelInfo.createdAt.toLocaleString("pl-PL")}; ostatni entry_id: ${channelInfo.lastEntryId ?? "brak danych"}.`);
+        updateProgress(1, 1, "Metadane pobrane", "kanał ThingSpeak");
+
+        const manualStart = document.getElementById("manualStartDate").value;
+        const startDate = manualStart ? new Date(`${manualStart}T00:00:00Z`) : channelInfo.createdAt;
+        const endDate = new Date();
+        const windows = makeDateWindows(startDate, endDate, CONFIG.chunkDays);
+        const totalProgressSteps = windows.length + 4;
+        startProgress(totalProgressSteps, "Przygotowanie pobierania", `${windows.length} okien`);
+
         log("Pobieram surowe dane z bieżącego dnia z ThingSpeak.");
-        const todayStart = startOfTodayLocalAsUtcDate();
-        const todayRaw = await fetchThingSpeak({ start: todayStart });
+        const todayRaw = await fetchTodayRaw();
         log(`Pobrano ${todayRaw.length} surowych próbek z bieżącego dnia.`);
+        updateProgress(1, totalProgressSteps, "Pobrano bieżący dzień", "surowe próbki dzisiejsze");
 
-        log("Pobieram długi zakres godzinowy z ThingSpeak: average=60, results=8000.");
-        const hourlyRaw = await fetchThingSpeak({ averageMinutes: 60 });
-        hourlyRaw.sort((a, b) => a.time - b.time);
-        log(`Pobrano ${hourlyRaw.length} godzinowych punktów sensora.`);
+        log("Pobieram pełny zakres surowych danych z ThingSpeak: start/end w krótkich oknach czasowych, results=8000 dla każdego okna.");
+        const historyRaw = await fetchRawHistory(windows, CONFIG.chunkDays, 1, totalProgressSteps);
+        log(`Po scaleniu i usunięciu duplikatów pozostało ${historyRaw.length} surowych próbek historycznych.`);
 
-        if (!hourlyRaw.length && !todayRaw.length) {
+        const hourlyRaw = aggregateHourlyFromRaw(historyRaw);
+        log(`Z surowych próbek wyliczono ${hourlyRaw.length} średnich godzinowych.`);
+        updateProgress(windows.length + 2, totalProgressSteps, "Agregacja danych sensora", "średnie godzinowe");
+
+        if (!historyRaw.length && !todayRaw.length) {
           throw new Error("Nie pobrano żadnych poprawnych wartości liczbowych z pola sensora.");
         }
 
@@ -858,8 +1125,10 @@
         const meteoHourly = await fetchMeteoHourly(startDateKey, endDateKey);
         const meteoMap = makeMeteoMap(meteoHourly);
         log(`Pobrano ${meteoHourly.length} godzinowych punktów pogodowych dla Lublina.`);
+        updateProgress(windows.length + 3, totalProgressSteps, "Pobrano dane Lublina", "Open-Meteo");
 
         const todayRows = attachLublinTemperature(todayRaw, meteoMap).sort((a, b) => a.time - b.time);
+        const rawRows = attachLublinTemperature(historyRaw, meteoMap).sort((a, b) => a.time - b.time);
         const hourlyRows = attachLublinTemperature(hourlyRaw, meteoMap).sort((a, b) => a.time - b.time);
         const dailyRows = aggregateDaily(hourlyRows);
         const weeklyRows = aggregateWeekly(hourlyRows);
@@ -872,15 +1141,18 @@
         renderWeeklyMean(weeklyRows);
         renderWeeklyMinMeanMax(weeklyRows);
         renderWeekdayStats(weekdayStats);
-        updateCards(todayRows, hourlyRows, weeklyRows);
+        updateCards(todayRows, rawRows, hourlyRows, dailyRows, weeklyRows, channelInfo);
+        updateProgress(totalProgressSteps, totalProgressSteps, "Rysowanie wykresów", "Plotly");
 
         const lublinMatches = hourlyRows.filter(row => Number.isFinite(row.lublin)).length;
         log(`Dopasowano temperaturę Lublina do ${lublinMatches} z ${hourlyRows.length} godzinowych punktów sensora.`);
-        setStatus("Gotowe", "dane pobrane, agregaty przeliczone, wykresy odświeżone", "status-ok");
+        setStatus("Gotowe", "pełny zakres pobrany, agregaty przeliczone, wykresy odświeżone", "status-ok");
+        finishProgress("Gotowe", "wykresy odświeżone");
       } catch (error) {
         console.error(error);
         log(`Błąd: ${error.message}`);
         setStatus("Błąd", error.message, "status-bad");
+        failProgress("Błąd pobierania", error.message);
       }
     }
 
@@ -895,7 +1167,6 @@
     document.getElementById("reloadButton").addEventListener("click", loadDashboard);
     document.getElementById("refreshMode").addEventListener("change", configureRefresh);
 
-    // Pierwsze pobranie wykonuje się automatycznie po otwarciu strony.
     loadDashboard();
   </script>
 </body>
