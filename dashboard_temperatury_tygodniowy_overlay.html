@@ -19,7 +19,7 @@
   - wykresy tygodniowe porównują kolejne tygodnie w układzie poniedziałek 00:00 do niedziela 23:00;
   - średnie, minima i maksima liczone są wyłącznie z poprawnych wartości liczbowych;
   - opcje techniczne są zwinięte w panel ustawień, żeby nie zajmowały miejsca na górze dashboardu;
-  - podczas pobierania wyświetlany jest pasek postępu z czasem trwania, szacowanym czasem pozostałym i numerem aktualnie pobieranego okna.
+  - podczas działania wyświetlane są dwa osobne paski postępu: pierwszy dla pobierania danych, drugi dla lokalnego przetwarzania i rysowania wykresów.
 -->
 <!doctype html>
 <html lang="pl">
@@ -120,6 +120,12 @@
     .progress-panel {
       margin-bottom: 16px;
       padding: 15px 17px;
+    }
+
+    .progress-block + .progress-block {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
     }
 
     .progress-header {
@@ -365,19 +371,37 @@
       </section>
     </details>
 
-    <section class="progress-panel" aria-label="Postęp pobierania danych">
-      <div class="progress-header">
-        <div id="progressTitle" class="progress-title">Postęp pobierania</div>
-        <div id="progressPercent" class="progress-percent">0%</div>
+    <section class="progress-panel" aria-label="Postęp pobierania i przetwarzania danych">
+      <div class="progress-block">
+        <div class="progress-header">
+          <div id="downloadProgressTitle" class="progress-title">Pobieranie danych</div>
+          <div id="downloadProgressPercent" class="progress-percent">0%</div>
+        </div>
+        <div id="downloadProgressTrack" class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Postęp pobierania">
+          <div id="downloadProgressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-meta">
+          <div>Etap<strong id="downloadProgressStep">oczekiwanie</strong></div>
+          <div>Czas trwania<strong id="downloadProgressElapsed">00:00</strong></div>
+          <div>Szacowany czas pozostały<strong id="downloadProgressRemaining">—</strong></div>
+          <div>Aktualne okno<strong id="downloadProgressWindow">—</strong></div>
+        </div>
       </div>
-      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Postęp pobierania">
-        <div id="progressFill" class="progress-fill"></div>
-      </div>
-      <div class="progress-meta">
-        <div>Etap<strong id="progressStep">oczekiwanie</strong></div>
-        <div>Czas trwania<strong id="progressElapsed">00:00</strong></div>
-        <div>Szacowany czas pozostały<strong id="progressRemaining">—</strong></div>
-        <div>Aktualne okno<strong id="progressWindow">—</strong></div>
+
+      <div class="progress-block">
+        <div class="progress-header">
+          <div id="processingProgressTitle" class="progress-title">Przetwarzanie danych</div>
+          <div id="processingProgressPercent" class="progress-percent">0%</div>
+        </div>
+        <div id="processingProgressTrack" class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Postęp przetwarzania">
+          <div id="processingProgressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-meta">
+          <div>Etap<strong id="processingProgressStep">oczekiwanie</strong></div>
+          <div>Czas trwania<strong id="processingProgressElapsed">00:00</strong></div>
+          <div>Szacowany czas pozostały<strong id="processingProgressRemaining">—</strong></div>
+          <div>Aktualna operacja<strong id="processingProgressWindow">—</strong></div>
+        </div>
       </div>
     </section>
 
@@ -504,15 +528,25 @@
       statusNote.textContent = note;
     }
 
-    const PROGRESS = {
-      startedAt: null,
-      finishedAt: null,
-      current: 0,
-      total: 1,
-      label: "oczekiwanie",
-      detail: "—",
-      timerId: null
-    };
+    function createProgressState(prefix) {
+      return {
+        prefix,
+        startedAt: null,
+        finishedAt: null,
+        current: 0,
+        total: 1,
+        label: "oczekiwanie",
+        detail: "—",
+        timerId: null
+      };
+    }
+
+    const DOWNLOAD_PROGRESS = createProgressState("download");
+    const PROCESS_PROGRESS = createProgressState("processing");
+
+    function getProgressElement(progress, suffix) {
+      return document.getElementById(`${progress.prefix}Progress${suffix}`);
+    }
 
     function formatDuration(milliseconds) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
@@ -526,63 +560,79 @@
       return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
     }
 
-    function renderProgress() {
-      const now = PROGRESS.finishedAt || Date.now();
-      const elapsed = PROGRESS.startedAt ? now - PROGRESS.startedAt : 0;
-      const total = Math.max(PROGRESS.total, 1);
-      const current = Math.min(Math.max(PROGRESS.current, 0), total);
+    function renderProgress(progress) {
+      const now = progress.finishedAt || Date.now();
+      const elapsed = progress.startedAt ? now - progress.startedAt : 0;
+      const total = Math.max(progress.total, 1);
+      const current = Math.min(Math.max(progress.current, 0), total);
       const percent = Math.round((current / total) * 100);
       const remaining = current > 0 && current < total
         ? Math.max(0, (elapsed / current) * (total - current))
         : current >= total ? 0 : NaN;
 
-      document.getElementById("progressTitle").textContent = PROGRESS.label;
-      document.getElementById("progressPercent").textContent = `${percent}%`;
-      document.getElementById("progressFill").style.width = `${percent}%`;
-      document.querySelector(".progress-track").setAttribute("aria-valuenow", String(percent));
-      document.getElementById("progressStep").textContent = `${current} / ${total}`;
-      document.getElementById("progressElapsed").textContent = formatDuration(elapsed);
-      document.getElementById("progressRemaining").textContent = Number.isFinite(remaining) ? formatDuration(remaining) : "—";
-      document.getElementById("progressWindow").textContent = PROGRESS.detail;
+      getProgressElement(progress, "Title").textContent = progress.label;
+      getProgressElement(progress, "Percent").textContent = `${percent}%`;
+      getProgressElement(progress, "Fill").style.width = `${percent}%`;
+      getProgressElement(progress, "Track").setAttribute("aria-valuenow", String(percent));
+      getProgressElement(progress, "Step").textContent = `${current} / ${total}`;
+      getProgressElement(progress, "Elapsed").textContent = formatDuration(elapsed);
+      getProgressElement(progress, "Remaining").textContent = Number.isFinite(remaining) ? formatDuration(remaining) : "—";
+      getProgressElement(progress, "Window").textContent = progress.detail;
     }
 
-    function startProgress(total, label, detail = "—") {
-      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
-      PROGRESS.startedAt = Date.now();
-      PROGRESS.finishedAt = null;
-      PROGRESS.current = 0;
-      PROGRESS.total = Math.max(Number(total) || 1, 1);
-      PROGRESS.label = label;
-      PROGRESS.detail = detail;
-      PROGRESS.timerId = setInterval(renderProgress, 1000);
-      renderProgress();
+    function resetProgress(progress, label = "oczekiwanie", detail = "—") {
+      if (progress.timerId) clearInterval(progress.timerId);
+      progress.startedAt = null;
+      progress.finishedAt = null;
+      progress.current = 0;
+      progress.total = 1;
+      progress.label = label;
+      progress.detail = detail;
+      progress.timerId = null;
+      renderProgress(progress);
     }
 
-    function updateProgress(current, total, label, detail = "—") {
-      PROGRESS.current = Math.min(Math.max(Number(current) || 0, 0), Math.max(Number(total) || PROGRESS.total, 1));
-      PROGRESS.total = Math.max(Number(total) || PROGRESS.total, 1);
-      PROGRESS.label = label;
-      PROGRESS.detail = detail;
-      renderProgress();
+    function startProgress(progress, total, label, detail = "—") {
+      if (progress.timerId) clearInterval(progress.timerId);
+      progress.startedAt = Date.now();
+      progress.finishedAt = null;
+      progress.current = 0;
+      progress.total = Math.max(Number(total) || 1, 1);
+      progress.label = label;
+      progress.detail = detail;
+      progress.timerId = setInterval(() => renderProgress(progress), 1000);
+      renderProgress(progress);
     }
 
-    function finishProgress(label, detail = "zakończono") {
-      PROGRESS.current = PROGRESS.total;
-      PROGRESS.label = label;
-      PROGRESS.detail = detail;
-      PROGRESS.finishedAt = Date.now();
-      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
-      PROGRESS.timerId = null;
-      renderProgress();
+    function updateProgress(progress, current, total, label, detail = "—") {
+      progress.current = Math.min(Math.max(Number(current) || 0, 0), Math.max(Number(total) || progress.total, 1));
+      progress.total = Math.max(Number(total) || progress.total, 1);
+      progress.label = label;
+      progress.detail = detail;
+      renderProgress(progress);
     }
 
-    function failProgress(label, detail = "przerwano") {
-      PROGRESS.label = label;
-      PROGRESS.detail = detail;
-      PROGRESS.finishedAt = Date.now();
-      if (PROGRESS.timerId) clearInterval(PROGRESS.timerId);
-      PROGRESS.timerId = null;
-      renderProgress();
+    function finishProgress(progress, label, detail = "zakończono") {
+      progress.current = progress.total;
+      progress.label = label;
+      progress.detail = detail;
+      progress.finishedAt = Date.now();
+      if (progress.timerId) clearInterval(progress.timerId);
+      progress.timerId = null;
+      renderProgress(progress);
+    }
+
+    function failProgress(progress, label, detail = "przerwano") {
+      progress.label = label;
+      progress.detail = detail;
+      progress.finishedAt = Date.now();
+      if (progress.timerId) clearInterval(progress.timerId);
+      progress.timerId = null;
+      renderProgress(progress);
+    }
+
+    function yieldToBrowser() {
+      return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     }
 
     function readUiConfig() {
@@ -804,7 +854,7 @@
         const window = windows[i];
         const startText = formatDateTimeForThingSpeak(window.start);
         const endText = formatDateTimeForThingSpeak(window.end);
-        updateProgress(progressOffset + i, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
+        updateProgress(DOWNLOAD_PROGRESS, progressOffset + i, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
         log(`Okno ${i + 1}/${windows.length}: ${startText} — ${endText}`);
         const data = await fetchThingSpeakJson({ start: startText, end: endText, results: 8000 });
         const rows = parseThingSpeakFeeds(data);
@@ -813,7 +863,7 @@
         }
         log(`  Pobrano ${rows.length} surowych próbek.`);
         allRows.push(...rows);
-        updateProgress(progressOffset + i + 1, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
+        updateProgress(DOWNLOAD_PROGRESS, progressOffset + i + 1, progressTotal, "Pobieranie historii sensora", `okno ${i + 1}/${windows.length}`);
       }
 
       const byEntryId = new Map();
@@ -955,7 +1005,7 @@
         { x: todayRows.map(row => row.time), y: todayRows.map(row => row.value), type: "scatter", mode: "lines+markers", name: "Sensor — próbki", line: { width: 2 } },
         { x: todayRows.map(row => row.time), y: todayRows.map(row => row.lublin), type: "scatter", mode: "lines", name: "Lublin — temperatura godzinowa", line: { width: 2, dash: "dot" } }
       ];
-      Plotly.newPlot("plotToday", traces, baseLayout(), plotConfig);
+      return Plotly.newPlot("plotToday", traces, baseLayout(), plotConfig);
     }
 
     function renderDailyOverlay(rows) {
@@ -978,7 +1028,7 @@
       layout.xaxis.tickmode = "array";
       layout.xaxis.tickvals = [0,3,6,9,12,15,18,21,24];
       layout.xaxis.ticktext = ["00", "03", "06", "09", "12", "15", "18", "21", "24"];
-      Plotly.newPlot("plotDailyOverlay", traces, layout, plotConfig);
+      return Plotly.newPlot("plotDailyOverlay", traces, layout, plotConfig);
     }
 
     function renderWeeklyOverlay(rows, weeksBack) {
@@ -1004,7 +1054,7 @@
       layout.xaxis.tickmode = "array";
       layout.xaxis.tickvals = [0, 24, 48, 72, 96, 120, 144, 167];
       layout.xaxis.ticktext = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd", "Nd 23"];
-      Plotly.newPlot("plotWeeklyOverlay", traces, layout, plotConfig);
+      return Plotly.newPlot("plotWeeklyOverlay", traces, layout, plotConfig);
     }
 
     function renderWeeklyMean(weeklyRows) {
@@ -1015,7 +1065,7 @@
       ];
       const layout = baseLayout();
       layout.xaxis.title = "Tydzień";
-      Plotly.newPlot("plotWeeklyMean", traces, layout, plotConfig);
+      return Plotly.newPlot("plotWeeklyMean", traces, layout, plotConfig);
     }
 
     function renderWeeklyMinMeanMax(weeklyRows) {
@@ -1028,7 +1078,7 @@
       ];
       const layout = baseLayout();
       layout.xaxis.title = "Tydzień";
-      Plotly.newPlot("plotWeeklyMinMeanMax", traces, layout, plotConfig);
+      return Plotly.newPlot("plotWeeklyMinMeanMax", traces, layout, plotConfig);
     }
 
     function renderWeekdayStats(stats) {
@@ -1042,7 +1092,7 @@
       const layout = baseLayout();
       layout.barmode = "group";
       layout.xaxis.title = "Dzień tygodnia";
-      Plotly.newPlot("plotWeekdayStats", traces, layout, plotConfig);
+      return Plotly.newPlot("plotWeekdayStats", traces, layout, plotConfig);
     }
 
     // =====================================================================
@@ -1085,74 +1135,101 @@
       readUiConfig();
       resetLog();
       setStatus("Pobieranie", "trwa pobieranie pełnej historii godzinowej", "status-warn");
-      startProgress(1, "Pobieranie metadanych", "kanał ThingSpeak");
+      startProgress(DOWNLOAD_PROGRESS, 1, "Pobieranie metadanych", "kanał ThingSpeak");
+      resetProgress(PROCESS_PROGRESS, "Przetwarzanie danych", "oczekiwanie na zakończenie pobierania");
 
       try {
         log("Pobieram metadane kanału ThingSpeak, w tym datę utworzenia kanału i ostatni numer wpisu.");
         const channelInfo = await fetchChannelInfo();
         log(`Kanał utworzony: ${channelInfo.createdAt.toLocaleString("pl-PL")}; ostatni entry_id: ${channelInfo.lastEntryId ?? "brak danych"}.`);
-        updateProgress(1, 1, "Metadane pobrane", "kanał ThingSpeak");
+        updateProgress(DOWNLOAD_PROGRESS, 1, 1, "Metadane pobrane", "kanał ThingSpeak");
 
         const manualStart = document.getElementById("manualStartDate").value;
         const startDate = manualStart ? new Date(`${manualStart}T00:00:00Z`) : channelInfo.createdAt;
         const endDate = new Date();
         const windows = makeDateWindows(startDate, endDate, CONFIG.chunkDays);
-        const totalProgressSteps = windows.length + 4;
-        startProgress(totalProgressSteps, "Przygotowanie pobierania", `${windows.length} okien`);
+        const totalDownloadSteps = windows.length + 2;
+        startProgress(DOWNLOAD_PROGRESS, totalDownloadSteps, "Przygotowanie pobierania", `${windows.length} okien`);
 
         log("Pobieram surowe dane z bieżącego dnia z ThingSpeak.");
         const todayRaw = await fetchTodayRaw();
         log(`Pobrano ${todayRaw.length} surowych próbek z bieżącego dnia.`);
-        updateProgress(1, totalProgressSteps, "Pobrano bieżący dzień", "surowe próbki dzisiejsze");
+        updateProgress(DOWNLOAD_PROGRESS, 1, totalDownloadSteps, "Pobrano bieżący dzień", "surowe próbki dzisiejsze");
 
         log("Pobieram pełny zakres surowych danych z ThingSpeak: start/end w krótkich oknach czasowych, results=8000 dla każdego okna.");
-        const historyRaw = await fetchRawHistory(windows, CONFIG.chunkDays, 1, totalProgressSteps);
+        const historyRaw = await fetchRawHistory(windows, CONFIG.chunkDays, 1, totalDownloadSteps);
         log(`Po scaleniu i usunięciu duplikatów pozostało ${historyRaw.length} surowych próbek historycznych.`);
-
-        const hourlyRaw = aggregateHourlyFromRaw(historyRaw);
-        log(`Z surowych próbek wyliczono ${hourlyRaw.length} średnich godzinowych.`);
-        updateProgress(windows.length + 2, totalProgressSteps, "Agregacja danych sensora", "średnie godzinowe");
 
         if (!historyRaw.length && !todayRaw.length) {
           throw new Error("Nie pobrano żadnych poprawnych wartości liczbowych z pola sensora.");
         }
 
-        const allForRange = hourlyRaw.length ? hourlyRaw : todayRaw;
+        const allForRange = historyRaw.length ? historyRaw : todayRaw;
         const startDateKey = localDateKey(allForRange[0].time);
         const endDateKey = todayLocalDateKey();
 
+        updateProgress(DOWNLOAD_PROGRESS, windows.length + 1, totalDownloadSteps, "Pobieranie danych Lublina", "Open-Meteo");
         log(`Pobieram temperaturę dla Lublina z Open-Meteo w zakresie ${startDateKey} — ${endDateKey}.`);
         const meteoHourly = await fetchMeteoHourly(startDateKey, endDateKey);
-        const meteoMap = makeMeteoMap(meteoHourly);
         log(`Pobrano ${meteoHourly.length} godzinowych punktów pogodowych dla Lublina.`);
-        updateProgress(windows.length + 3, totalProgressSteps, "Pobrano dane Lublina", "Open-Meteo");
+        finishProgress(DOWNLOAD_PROGRESS, "Pobieranie zakończone", "ThingSpeak + Open-Meteo");
 
+        startProgress(PROCESS_PROGRESS, 9, "Przetwarzanie danych", "średnie godzinowe");
+        await yieldToBrowser();
+
+        const hourlyRaw = aggregateHourlyFromRaw(historyRaw);
+        log(`Z surowych próbek wyliczono ${hourlyRaw.length} średnich godzinowych.`);
+        updateProgress(PROCESS_PROGRESS, 1, 9, "Przetwarzanie danych", "średnie godzinowe");
+        await yieldToBrowser();
+
+        const meteoMap = makeMeteoMap(meteoHourly);
         const todayRows = attachLublinTemperature(todayRaw, meteoMap).sort((a, b) => a.time - b.time);
         const rawRows = attachLublinTemperature(historyRaw, meteoMap).sort((a, b) => a.time - b.time);
         const hourlyRows = attachLublinTemperature(hourlyRaw, meteoMap).sort((a, b) => a.time - b.time);
+        updateProgress(PROCESS_PROGRESS, 2, 9, "Dopasowanie danych", "sensor + Lublin");
+        await yieldToBrowser();
+
         const dailyRows = aggregateDaily(hourlyRows);
         const weeklyRows = aggregateWeekly(hourlyRows);
         const weekdayStats = aggregateWeekdayStats(dailyRows);
         const weeksBack = Number(document.getElementById("weeksBack").value) || 4;
+        updateProgress(PROCESS_PROGRESS, 3, 9, "Agregacja danych", "dobowe i tygodniowe");
+        await yieldToBrowser();
 
-        renderToday(todayRows);
-        renderDailyOverlay(hourlyRows);
-        renderWeeklyOverlay(hourlyRows, weeksBack);
-        renderWeeklyMean(weeklyRows);
-        renderWeeklyMinMeanMax(weeklyRows);
-        renderWeekdayStats(weekdayStats);
+        await renderToday(todayRows);
+        updateProgress(PROCESS_PROGRESS, 4, 9, "Rysowanie wykresów", "bieżący dzień");
+        await yieldToBrowser();
+
+        await renderDailyOverlay(hourlyRows);
+        updateProgress(PROCESS_PROGRESS, 5, 9, "Rysowanie wykresów", "overlay dobowy");
+        await yieldToBrowser();
+
+        await renderWeeklyOverlay(hourlyRows, weeksBack);
+        updateProgress(PROCESS_PROGRESS, 6, 9, "Rysowanie wykresów", "overlay tygodniowy");
+        await yieldToBrowser();
+
+        await renderWeeklyMean(weeklyRows);
+        updateProgress(PROCESS_PROGRESS, 7, 9, "Rysowanie wykresów", "średnie tygodniowe");
+        await yieldToBrowser();
+
+        await renderWeeklyMinMeanMax(weeklyRows);
+        updateProgress(PROCESS_PROGRESS, 8, 9, "Rysowanie wykresów", "minimum, średnia, maksimum");
+        await yieldToBrowser();
+
+        await renderWeekdayStats(weekdayStats);
         updateCards(todayRows, rawRows, hourlyRows, dailyRows, weeklyRows, channelInfo);
-        updateProgress(totalProgressSteps, totalProgressSteps, "Rysowanie wykresów", "Plotly");
+        updateProgress(PROCESS_PROGRESS, 9, 9, "Aktualizacja podsumowania", "karty i log");
 
         const lublinMatches = hourlyRows.filter(row => Number.isFinite(row.lublin)).length;
         log(`Dopasowano temperaturę Lublina do ${lublinMatches} z ${hourlyRows.length} godzinowych punktów sensora.`);
         setStatus("Gotowe", "pełny zakres pobrany, agregaty przeliczone, wykresy odświeżone", "status-ok");
-        finishProgress("Gotowe", "wykresy odświeżone");
+        finishProgress(PROCESS_PROGRESS, "Przetwarzanie zakończone", "wykresy odświeżone");
       } catch (error) {
         console.error(error);
         log(`Błąd: ${error.message}`);
         setStatus("Błąd", error.message, "status-bad");
-        failProgress("Błąd pobierania", error.message);
+        if (!DOWNLOAD_PROGRESS.finishedAt) failProgress(DOWNLOAD_PROGRESS, "Błąd pobierania", error.message);
+        if (!PROCESS_PROGRESS.finishedAt) failProgress(PROCESS_PROGRESS, "Błąd przetwarzania", error.message);
       }
     }
 
